@@ -1,0 +1,246 @@
+---
+title: "Predicting diabetes status using NHANES"
+subtitle: "[DSLC stages]: Analysis"
+format: 
+  html:
+    toc: true
+    toc-location: right
+    number-depth: 3
+    theme: cerulean
+execute:
+  echo: true
+editor: source
+embed-resources: true
+---
+
+The following code sets up the libraries and creates cleaned and pre-processed training, validation and test data that we will use in this document.
+
+```{r}
+#| message: false
+#| warning: false
+
+# loading libraries
+library(tidyverse)
+library(janitor)
+library(fastDummies)
+# 引入必要的库
+library(caret) # 用于训练和评估模型
+library(randomForest) # Bagging (Random Forest)
+library(e1071) # SVM
+library(class) # KNN
+library(yardstick) # 用于评估指标
+library(patchwork)
+library(lubridate)
+library(scales)
+library(fastDummies)
+# cleaning and pre-processing the Diabetes data
+source("functions/prepareDiabetesData.R")
+
+# list all objects (and custom functions) that exist in our environment
+ls()
+# look at the variables in the data set
+str(diabetes_train_preprocessed)
+str(diabetes_val_preprocessed)
+str(diabetes_test_preprocessed)
+
+```
+
+We found that we need to remove the variables related to id for further prediction.
+
+```{r}
+library(dplyr)
+diabetes_train_preprocessed <- diabetes_train_preprocessed %>%
+  select(-id, -house_family_person_id)
+
+diabetes_val_preprocessed <- diabetes_val_preprocessed %>%
+  select(-id, -house_family_person_id)
+str(diabetes_val_preprocessed)
+
+diabetes_test_preprocessed <- diabetes_test_preprocessed %>%
+  select(-id, -house_family_person_id)
+str(diabetes_test_preprocessed)
+
+str(diabetes_train_preprocessed)
+str(diabetes_val_preprocessed)
+str(diabetes_test_preprocessed)
+
+head(diabetes_train_preprocessed)
+head(diabetes_val_preprocessed)
+head(diabetes_test_preprocessed)
+
+
+```
+
+## Fitting KNN to the full training dataset
+
+Compute a KNN fit for the entire training dataset:
+
+```{r}
+# Load the necessary library
+library(caret)
+
+# Set up training control for 10-fold cross-validation
+train_control <- trainControl(method = "cv", number = 10)
+
+# Fit the KNN model with cross-validation
+knn_fit <- train(factor(diabetes) ~ ., 
+                 data = diabetes_train_preprocessed, 
+                 method = "knn", 
+                 trControl = train_control, 
+                 tuneLength = 20)  # Try 20 different values of k (you can adjust this)
+
+# View the results (best k value and accuracy)
+print(knn_fit)
+# 使用交叉验证选择的最佳k值对训练数据进行预测
+knn_predictions_train <- predict(knn_fit, newdata = diabetes_train_preprocessed)
+
+# 查看训练数据的预测结果
+head(knn_predictions_train)
+
+```
+
+## Fitting logistic regression to the full training dataset
+
+Compute a logistic regression fit for the entire training dataset:
+
+```{r}
+lr_fit <- glm(factor(diabetes) ~ ., 
+                   data = diabetes_train_preprocessed, 
+                   family = "binomial")
+
+# 查看模型的概况
+summary(lr_fit)
+
+# 逻辑回归模型对训练数据的预测
+lr_predictions_train <- predict(lr_fit, newdata = diabetes_train_preprocessed, type = "response")
+
+# 将预测结果转换为二分类（大于0.5为1，否则为0）
+lr_predictions_train_class <- ifelse(lr_predictions_train > 0.5, 1, 0)
+
+# 查看训练数据的预测结果
+head(lr_predictions_train_class)
+```
+
+### Comparing the coefficients using bootstrap standardization
+
+First, we will create 1000 bootstrapped (sampled with replacement) versions of the training dataset, and we will compute a logistic regression fit to each bootstrapped training data sample.
+
+```{r}
+# 加载必要的库
+library(dplyr)
+library(purrr)
+
+# 设置随机种子以确保结果可重复
+set.seed(27398)
+
+# 创建1000个bootstrap样本并计算每个样本上的系数
+boot_coefs <- map_df(1:1000, function(i) {
+  # 创建一个bootstrap样本
+  diabetes_boot <- diabetes_train_preprocessed |> 
+    sample_frac(1, replace = TRUE)
+  
+  # 拟合逻辑回归模型
+  lr_boot <- glm(factor(diabetes) ~ ., 
+                 data = diabetes_boot, 
+                 family = "binomial")
+  
+  # 返回每个模型的系数
+  return(enframe(lr_boot$coefficients, name = "variable", value = "coefficient"))
+}, .id = "boot")
+```
+
+```{r}
+# 查看生成的bootstrap系数
+head(boot_coefs)
+```
+
+Having computed 1000 bootstrapped coefficient values, we can compute their standard deviation, and use this value to standardize the original coefficient values
+
+```{r}
+# 计算bootstrap系数的标准差并标准化原始系数
+coefs_std <- boot_coefs |>
+  group_by(variable) |>
+  summarise(boot_sd = sd(coefficient)) |>
+  ungroup() |>
+  left_join(enframe(lr_fit$coefficients, 
+                    name = "variable", 
+                    value = "coefficient"), 
+            by = "variable") |>
+  mutate(standardized_coefficient = coefficient / boot_sd) |>
+  arrange(desc(abs(standardized_coefficient))) |>
+  filter(variable != "(Intercept)") |>
+  select(variable, coefficient, boot_sd, standardized_coefficient)
+
+# 查看标准化后的系数
+print(coefs_std, width = Inf)
+```
+
+## Fitting SVM to the full training dataset
+
+Compute a SVM fit for the entire training dataset:
+
+```{r}
+# Load the necessary library
+library(e1071)
+
+# Fit the SVM model
+svm_fit <- svm(factor(diabetes) ~ ., 
+                    data = diabetes_train_preprocessed, 
+                    kernel = "radial")  # 你可以选择其他核函数
+
+# 使用训练好的 SVM 模型进行训练数据的预测
+svm_predictions_train <- predict(svm_fit, newdata = diabetes_train_preprocessed)
+
+# 查看训练数据的预测结果
+head(svm_predictions_train)
+
+```
+
+## Fitting Bagging(RF) to the full training dataset
+
+Compute a Bagging(RF) fit for the entire training dataset:
+
+```{r}
+# Load the necessary library
+library(randomForest)
+
+# Bagging (RF) Fit
+rf_fit <- randomForest(factor(diabetes) ~ ., 
+                            data = diabetes_train_preprocessed, 
+                            ntree = 500,  # Number of trees (you can adjust)
+                            mtry = sqrt(ncol(diabetes_train_preprocessed) - 1),  # Default: sqrt(p)
+                            importance = TRUE)  # View variable importance
+
+# View the model summary
+print(rf_diabetes)
+```
+
+## Evaluating binary predictions for a sample of 20 validation points
+
+### The confusion matrix
+
+### Prediction accuracy
+
+### Precision
+
+### Recall
+
+### F1 score
+
+### True positiveand true negative rate
+
+### Predicted probability densities
+
+### ROC curves and AUC-ROC
+
+### Log-Loss
+
+### Matthews Correlation Coefficient
+
+## PCS evaluations
+
+### Predictability (evaluating binary predictions for the full validation set)
+
+### Stability to data perturbations
+
+### Stability to cleaning/pre-processing judgment calls
