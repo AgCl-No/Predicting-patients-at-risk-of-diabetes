@@ -1,0 +1,433 @@
+---
+title: "Cleaning the NHANES diabetes data"
+subtitle: "[DSLC stages]: Data cleaning and pre-processing"
+format: 
+  html:
+    toc: true
+    toc-location: right
+    number-depth: 4
+    theme: cerulean
+    df-print: kable
+execute:
+  echo: true
+editor: source
+number-sections: true
+embed-resources: true
+---
+
+Start by loading in any libraries that you will use in this document.
+
+```{r setup}
+#| label: setup
+#| message: false
+#| warning: false
+
+# load the libraries we will need in this document
+library(tidyverse)
+library(lubridate)
+library(janitor)
+library(fastDummies)
+```
+
+## Domain problem formulation
+
+The goal of this project is to develop a binary classification prediction algorithm to predict whether a patient is at risk of diabetes. The algorithm aims to identify patients who may be at higher risk of diabetes, thereby providing support for early intervention.
+
+## Data source overview
+
+The *NHANES* dataset can be downloaded from the [NHANES website](https://www.cdc.gov/nchs/nhanes/?CDC_AAref_Val=https://www.cdc.gov/nchs/nhanes/index.htm)
+
+## Step 1: Review background information {#sec:bg-info}
+
+### Information on data collection
+
+The data collection for NHANES is organized by the National Center for Health Statistics (NCHS) under the Centers for Disease Control and Prevention (CDC). The data collection is carried out through the following methods: health interviews, which gather information on health, diet, and lifestyle through questionnaires or face-to-face interviews; physical examinations, conducted at mobile examination centers, including measurements of blood glucose and other physiological indicators; and laboratory testing, where blood and urine samples are collected and analyzed to assess diabetes and related risk factors. All data are collected by trained health professionals and processed through an electronic system to ensure accuracy and timeliness.
+
+### Data dictionary
+
+The features (in terms of the cleaned column names) for each participant include a set of variables describing their health status, lifestyle factors, and medical history, which are used to predict the risk of diabetes. These features include demographic information, such as age and sex, as well as various health conditions and behaviors, including smoking, hypertension, weight, BMI, and family history of diabetes. The response variable indicates whether the participant is at risk of diabetes based on the collected data:
+
+-   `house_family_person_id`: a unique identifier for each participant, combining household(HHX), family(FMX), and person(FPX) IDs; type: string(categorical).
+
+-   `age`: the age of the participants in years; type: numeric (continuouns).
+
+-   `smoker`: indicates whether the participant is a smoker(1) or not (0); type: integer(0 or 1).
+
+-   `sex`: gender of the participant, where 1 represents male and 2 represents female; type: integer(categorical).
+
+-   `coronary_heart_disease`: binary variable indicating whether the participant has coronary heart disease (1) or not (0); type: integer (0 or 1).
+
+-   `weight`: the weight of the participant in pounds(lbs; type: numeric (continuous).
+
+-   `bmi`: body mass index of the participant; type: numeric (continuous)
+
+-   `height`: the height of the participant in inches; type: numeric (continuous).
+
+-   `hypertension`: binary variable indicating whether the participant has hypertension (1) or not (0); type: integer (0 or 1).
+
+-   `heart_condition`: binary variable indicating whether the participant has a heart condition (1) or not (0); type: (0 or 1).
+
+-   `cancer`: binary variable indicating whether the participant has cancer (1) or not (0); type: integer(0 or 1).
+
+-   `family_history_diabetes`: binary variable indicating whether the participant has a family history of diabetes (1) or not (0); type: integer (0 or 1).
+
+Finally, there is the response variable that we are interested in predicting:
+
+-   `diabetes`: the **response variable** corresponding to whether a purchase was made during the session. (We will change the name of this feature to `purchase` below.)
+
+### Answering questions about the background information
+
+Answer the recommended background information questions from the Data Cleaning chapter.
+
+-   *What does each variable measure?*
+
+    Each variable measures a specific aspect of a participant’s health, lifestyle, or medical history. For example, **age** measures the participant's age, **smoker** indicates whether the participant smokes, **bmi** measures the body mass index, and **diabetes** indicates whether the participant is at risk of diabetes based on self-reported data and medical history.
+
+-   *How was the data collected?*
+
+    The data was collected through health interviews and physical examinations as part of the NHANES survey. Interviews gathered demographic, lifestyle, and health-related information, while physical exams included measurements of physiological factors (e.g., height, weight, blood pressure) and laboratory tests to assess conditions like diabetes.
+
+-   *What are the observational units?*
+
+    The observational units are individual participants in the NHANES survey, each representing a person’s health data.
+
+-   *Is the data relevant to my project?*
+
+    Yes, the data is highly relevant as it includes key health indicators (e.g., BMI, hypertension, family history of diabetes) and medical conditions that are associated with diabetes risk, which are essential for developing a predictive algorithm for diabetes risk.
+
+## Step 2: Loading the data
+
+Load the data, we first load all the original data to check whether there is any problem in the loading process. When there is no problem, we then use the loadDiabetesData function to generate a smaller file containing only 11 predictive features and a binary response variable for us, and do subsequent data preparation processing on the new data.
+
+```{r}
+diabetes_orig <- read_csv("./data/samadult.csv")
+```
+
+We find that some data types do not match the expected type, such as data that is expected to be 0/1 or T/F, but is stored in other numbers, for more rigorous analysis, we store the problematic data in a new variable, by looking at the column name to determine whether it can be modified manually.
+
+```{r}
+# 使用 problems() 获取错误的列信息
+problem_df <- problems(diabetes_orig)
+# 提取出出现错误的列号
+error_columns <- unique(problem_df$col)
+# 查看这些列对应的列名称
+column_names <- colnames(diabetes_orig)[error_columns]
+# 打印出有错误的列名
+print(column_names)
+```
+
+We queried the name of the warning column and the meaning of the variable from the data collection related files. We find that variables beginning with CANAGE correspond to age data; The variable at the beginning of ALCHRC corresponds to the encoding of the disease state; The variable beginning with ALTIME corresponds to the duration of the health problem; The variable at the beginning of ALDUR corresponds to the different grouping of the number of units of different duration of disease (for example, adding A corresponds to recode1, adding B corresponds to recode 2, each recode is a different grouping of the duration); The variable at the beginning of ALUNIT corresponds to the unit of duration of different diseases (such as years or months), and will correspond to ALDUR, one is the unit definition and one is the number of units.Then we look at the specific value of the data for each variable corresponding to the column where the warning occurred.
+
+```{r}
+# 循环逐个查看每一列的相关数据
+for (col_index in error_columns) {
+  # 获取错误列的名称
+  col_name <- colnames(diabetes_orig)[col_index]
+  
+  # 打印列名称
+  print(paste("查看列:", col_name))
+  
+  # 查找在 problem_df 中该列的错误信息
+  error_data <- problem_df[problem_df$col == col_index, ]
+  
+  # 打印出该列的错误数据
+  print(error_data)
+  
+  # 等待用户按Enter键继续
+  readline(prompt = "按Enter键继续查看下一个列...")
+}
+```
+
+We then check the range of data for each variable according to the information in another data collection table to confirm that the data problems in the warning are reasonable and do not need to be modified.
+
+Now, we can look at the first few rows to make sure it looks like it has been loaded in correctly:
+
+```{r}
+head(diabetes_orig)
+```
+
+And let's examine the dimension of the data.
+
+```{r}
+dim(diabetes_orig)
+```
+
+That's a lot of data!Now we use the loadDiabetesData function to generate a dataset with only 11 predictive features and 1 binary response variable for us.
+
+```{r}
+source("./dslc_documentation/fuctions/loadDiabetesData.R")
+
+diabetes_data <- loadDiabetesData("./data/samadult.csv", "./data/samadult_final.xlsx")
+```
+
+The above warning appears when loading data, but from the above analysis we know that there is nothing wrong with the data itself.
+
+## Step 3: Examine the data
+
+In this section we explore the common messy data traits to identify any cleaning action items.
+
+First we import the new data set.
+
+```{r}
+library(readxl)
+
+# take care to adjust the working directory
+# then run the following code
+diabetes_orig <- read_xlsx("./data/samadult_final.xlsx")
+```
+
+```{r}
+head(diabetes_orig) |>
+  print(width = Inf)
+```
+
+```{r}
+dim(diabetes_orig)
+```
+
+### Finding invalid values
+
+We pick random lines of data to look at.
+
+```{r}
+set.seed(874)
+diabetes_orig |>
+  sample_n(10) |>
+  print(width = Inf)
+```
+
+#### Numeric variables
+
+First, we can look at the minimum, maximum, and mean values of all numerical variables. This helps us identify potential outliers or unreasonable values.
+
+```{r}
+#| label: diabetes-summary
+library(dplyr)
+library(purrr)
+
+# 筛选出真正的数值变量，排除可能是类别变量的列,但是保留是类别变量，却存在未知或者成功采访的类别变量
+diabetes_summary <- diabetes_orig %>%
+  select_if(~is.numeric(.) && length(unique(.)) > 2) %>%  # 排除只有1-2个唯一值的列（通常是类别变量）
+  map_df(~tibble(
+    min = min(., na.rm = TRUE),
+    max = max(., na.rm = TRUE),
+    mean = round(mean(., na.rm = TRUE), 2)
+  ), .id = "variable")
+
+# 查看处理结果
+print(diabetes_summary)
+```
+
+According to the comparison table of variables, smoker contains a value other than 1 or 2, weight contains a value over 299, height contains a value over 76 and bmi 9999, all of which indicate that the data is uncertain or unknown. In addition, there are data with a value of 85 in age, which means the age is not less than 84 years old, and the value of 9995 in bmi, which means the bmi is more than 99.94. Because they represent a range rather than a specific value, there may be a problem of model bias, so we first check the number of data in the above cases:
+
+```{r}
+# 查询 age 列中值为 85 的数据数量
+age_85_count <- sum(diabetes_orig$age == 85, na.rm = TRUE)
+cat("The number of data in the age column with a value of 85：", age_85_count, "\n")
+
+# 查询 smoker 列中值不为 1 或 2 的数据数量
+smoker_invalid_count <- sum(!diabetes_orig$smoker %in% c(1, 2), na.rm = TRUE)
+cat("The number of data whose median value in the smoker column is not 1 or 2：", smoker_invalid_count, "\n")
+
+# 查询 weight 列中超过 299 的数据数量
+weight_above_299_count <- sum(diabetes_orig$weight > 299, na.rm = TRUE)
+cat("The number of data in the weight column that exceeds 299：", weight_above_299_count, "\n")
+
+# 查询 bmi 列中超过 9994 的数据数量
+bmi_above_9994_count <- sum(diabetes_orig$bmi > 9994, na.rm = TRUE)
+cat("The number of data over 9994 in the bmi column：", bmi_above_9994_count, "\n")
+
+# 查询 height 列中超过 76 的数据数量
+height_above_76_count <- sum(diabetes_orig$height > 76, na.rm = TRUE)
+cat("The number of data above 76 in the height column：", height_above_76_count, "\n")
+```
+
+```{r}
+library(dplyr)
+
+# 查询同时满足所有条件的数据数量
+filtered_data_count <- diabetes_orig %>%
+  filter(
+    age == 85,
+    smoker %in% c(1, 2),
+    weight > 299,
+    bmi > 9994,
+    height > 76
+  ) %>%
+  nrow()
+
+cat("The amount of data that meets all conditions simultaneously：", filtered_data_count, "\n")
+
+```
+
+We found that the problematic data only involved less than 7632 samples, while our total sample number was 32,499, so we could choose to delete the problematic samples.
+
+```{r}
+# 删除存在异常或不准确数据的行
+diabetes_cleaned <- diabetes_orig %>%
+  filter(
+    !(age == 85),
+    smoker %in% c(1, 2),
+    weight <= 299,
+    bmi <= 9994,
+    height <= 76
+  )
+
+# 检查删除后数据的数量
+cat("Number of deleted data：", nrow(diabetes_cleaned), "\n")
+```
+
+We can view the distribution of numerical variables by plotting histograms to help identify potential outliers or outliers.
+
+```{r}
+# 安装ggplot2（如果没有安装）
+install.packages("ggplot2")
+
+# 加载ggplot2包
+library(ggplot2)
+
+# 画出多个数值变量的直方图
+diabetes_cleaned %>%
+  select(age, weight, bmi, height) %>%
+  pivot_longer(cols = everything(), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(binwidth = 10, color = "black", fill = "skyblue", alpha = 0.7) +
+  facet_wrap(~variable, scales = "free_x") +  # 按变量分面显示，自动调整x轴
+  theme_minimal() +
+  labs(title = "Distribution of Age, Weight, BMI, and Height",
+       x = "Value",
+       y = "Frequency") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # 使x轴标签更易读
+```
+
+We found that they were orders of magnitude different, and we standardized them after everything else.
+
+#### Categorical variables
+
+By observing the categorical variables, we find that apart from smokers and sex, we use 1 and 2 to distinguish, and the others use 0 and 1 to distinguish. And we do a unified treatment.
+
+```{r}
+# 转换categorical变量（比如smoker和sex列的0/1转换）
+  diabetes_cleaned <- diabetes_cleaned %>%
+    mutate(
+      smoker = ifelse(smoker == 2, 0, smoker),  # 将smoker中的2换成0
+      sex = ifelse(sex == 1, 0, ifelse(sex == 2, 1, sex))  # 将sex中的1换成0，2换成1
+    )
+```
+
+### Examining missing values
+
+Let's count the proportion of missing (`NA`) values in each column.
+
+```{r}
+library(dplyr)
+
+# 检查每列缺失值比例
+missing_values <- diabetes_cleaned %>%
+  summarise_all(~sum(is.na(.)) / n()) %>%
+  gather(key = "variable", value = "missing_ratio") %>%
+  arrange(desc(missing_ratio))
+
+# 打印结果
+print(missing_values)
+
+```
+
+No missing values. Now we can do normalization
+
+```{r}
+# Standardize the numeric variables
+library(dplyr)
+
+# Assuming diabetes_cleaned is your cleaned dataset
+diabetes_cleaned <- diabetes_cleaned %>%
+  mutate(
+    age = scale(age),
+    weight = scale(weight),
+    height = scale(height),
+    bmi = scale(bmi)
+  )
+
+# Check the first few rows to confirm the standardization
+head(diabetes_cleaned)
+
+```
+
+Another way to do this is to convert logarithms(used when conducting research on PCS framework).
+
+```{r}
+# Log transformation of numeric variables
+diabetes_cleaned <- diabetes_cleaned %>%
+  mutate(
+    age = log(age + 1),   # 使用 log(x + 1) 可以避免零值问题
+    weight = log(weight + 1),
+    height = log(height + 1),
+    bmi = log(bmi + 1)
+  )
+
+# 检查转换后的数据
+head(diabetes_cleaned)
+```
+
+### Examining the data format
+
+The data is already in a "tidy" format, where each row corresponds to the data for a single observational unit, and each column corresponds to a unique type of measurement.
+
+### Assessing column names
+
+The column names need to be cleaned in order to conform to our tidy column name requirements of words in column names being underscore-separated and lowercase.
+
+### Assessing variable type
+
+The code below prints the type/class of each variable, each of which seems to be a character or an integer.
+
+```{r}
+diabetes_cleaned |>
+  map_df(~tibble(class = class(.)), 
+         .id = "variable") |>
+  arrange(class) |>
+  as.data.frame()
+```
+
+```{r}
+diabetes_cleaned <- diabetes_cleaned %>%
+  mutate(
+    age = as.numeric(age),
+    weight = as.numeric(weight),
+    height = as.numeric(height),
+    bmi = as.numeric(bmi),
+    smoker = as.factor(smoker),
+    sex = as.factor(sex),
+    coronary_heart_disease = as.factor(coronary_heart_disease),
+    hypertension = as.factor(hypertension),
+    heart_condition = as.factor(heart_condition),
+    cancer = as.factor(cancer),
+    family_history_diabetes = as.factor(family_history_diabetes),
+    diabetes = as.factor(diabetes)
+  )
+
+```
+
+### Evaluating data completeness
+
+Data collection agencies ensure data completeness.
+
+## Step 4: Clean and pre-process the data
+
+Now we implement the cleaning and pre-processing action items that we proposed in the sections above. Since the cleaning and pre-processing action items feel very inter-related, we will write a single `prepareShoppingData()` function, rather writing two separate functions.
+
+The default action items include:
+
+-   Delete invalid data
+
+-   Convert the diabetes, cancer, family_history_diabetes, heart_condition, hypertension, coronary_heart_disease, sex and smoker numeric variables to factors.
+
+We also included optional pre-processing action items (as arguments):
+
+-   Standardize numeric variables.
+
+-   Convert sex and smoker to a binary variable that is 1 or 0 .
+
+-   Applying a log-transformation to several of the predictor variables.
+
+Alternative judgment calls for each of these action items is to *not* implement them. The cleaning/preprocessing "preparation" function is shown below and is saved in the file "functions/prepareShoppingData.R". At the end of this file, the data is split into training(60%), validation(20%), and test(20%) sets and each dataset is prepared using the `prepareDiabetesData()` function.
