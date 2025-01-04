@@ -1,0 +1,316 @@
+---
+title: "Exploring the NHANES diabetes"
+subtitle: "[DSLC stages]: EDA"
+format: 
+  html:
+    toc: true
+    toc-location: right
+    number-depth: 3
+    theme: cerulean
+    df-print: kable
+execute:
+  echo: true
+editor: source
+number-sections: true
+embed-resources: true
+---
+
+In this document, you will find the PCS workflow and code for conducting an EDA of the online shopping data. Note that each section in this document corresponds to an interesting trend/finding.
+
+Recall that we examined and cleaned the shopping data in the file `01_cleaning.qmd`. In each subsequent file that uses the cleaned version of the data, and the cleaning/pre-processing "preparation" procedure is contained in the `R/prepareDiabetesData.R` file, which is sourced below.
+
+```{r}
+#| message: false
+library(tidyverse)
+library(fastDummies)
+library(janitor)
+library(patchwork)
+library(superheat)
+# if library(superheat) doesn't work, you might first need to run:
+# library(devtools)
+# install_github("rlbarter/superheat")
+
+# apply the cleaning and pre-processing functions
+source("functions/loadDiabetesData.R")
+source("functions/preprocessDiabetesData.R")
+source("functions/prepareDiabetesData.R")
+
+# list all objects (and custom functions) that exist in our environment
+ls()
+
+```
+
+数据概览
+
+```{r}
+# 查看数据集的结构
+str(diabetes_cleaned)
+
+# 查看数据集的前几行
+head(diabetes_cleaned)
+
+# 查看数据的摘要信息
+summary(diabetes_cleaned)
+
+```
+
+数据可视化分布
+
+```{r}
+library(ggplot2)
+
+# 直方图：查看Age的分布
+ggplot(diabetes_cleaned, aes(x = age)) + 
+  geom_histogram(binwidth = 1, fill = "#AEC6CF", color = "black") +  # 柔和的浅蓝色
+  theme_minimal() + 
+  labs(title = "Distribution of Age", x = "Age", y = "Count")
+
+# 直方图：查看Weight的分布
+ggplot(diabetes_cleaned, aes(x = weight)) + 
+  geom_histogram(binwidth = 5, fill = "#F8B88B", color = "black") +  # 柔和的浅橙色
+  theme_minimal() + 
+  labs(title = "Distribution of Weight", x = "Weight", y = "Count")
+
+# 直方图：查看BMI的分布
+ggplot(diabetes_cleaned, aes(x = bmi)) + 
+  geom_histogram(binwidth = 1, fill = "#B8E0D2", color = "black") +  # 柔和的浅绿色
+  theme_minimal() + 
+  labs(title = "Distribution of BMI", x = "BMI", y = "Count")
+
+```
+
+类别变量
+
+```{r}
+# 安装并加载 extrafont 包
+install.packages("extrafont")
+library(extrafont)
+
+# 使用 Arial 字体
+windowsFonts(Arial = windowsFont("Arial"))
+
+# 绘制性别分布的条形图，配色柔和
+ggplot(diabetes_cleaned, aes(x = sex)) + 
+  geom_bar(fill = "#A3C9D1") +  # 柔和的浅蓝色
+  theme_minimal() + 
+  labs(title = "Gender Distribution", x = "Sex", y = "Count") + 
+  theme(text = element_text(family = "Arial", size = 12))
+
+# 绘制性别分布的条形图，配色柔和
+ggplot(diabetes_cleaned, aes(x = sex)) + 
+  geom_bar(fill = "#A3C9D1") +  # 柔和的浅蓝色
+  theme_minimal() + 
+  labs(title = "Gender Distribution", x = "Sex", y = "Count") + 
+  theme(text = element_text(family = "Times New Roman", size = 12))
+
+# 绘制吸烟者分布的条形图，配色柔和
+ggplot(diabetes_cleaned, aes(x = smoker)) + 
+  geom_bar(fill = "#FFB3B3") +  # 柔和的粉红色
+  theme_minimal() + 
+  labs(title = "Smoker Distribution", x = "Smoker", y = "Count") + 
+  theme(text = element_text(family = "Times New Roman", size = 12))
+
+# 绘制糖尿病分布的条形图，配色柔和
+ggplot(diabetes_cleaned, aes(x = diabetes)) + 
+  geom_bar(fill = "#C1E1C1") +  # 柔和的浅绿色
+  theme_minimal() + 
+  labs(title = "Diabetes Distribution", x = "Diabetes", y = "Count") + 
+  theme(text = element_text(family = "Times New Roman", size = 12))
+
+
+
+```
+
+检查异常值
+
+```{r}
+install.packages("ggplot2")
+library(ggplot2)
+# 使用箱线图查看各数值变量中的异常值
+ggplot(diabetes_cleaned, aes(y = age)) + 
+  geom_boxplot(fill = "#8BC6D1") +  # 使用柔和的蓝绿色
+  theme_minimal() + 
+  labs(title = "Boxplot of Age", y = "Age")
+
+ggplot(diabetes_cleaned, aes(y = weight)) + 
+  geom_boxplot(fill = "#B3CDE0") +  # 使用柔和的蓝色
+  theme_minimal() + 
+  labs(title = "Boxplot of Weight", y = "Weight")
+
+ggplot(diabetes_cleaned, aes(y = bmi)) + 
+  geom_boxplot(fill = "#A1D9C7") +  # 使用柔和的绿色
+  theme_minimal() + 
+  labs(title = "Boxplot of BMI", y = "BMI")
+
+
+```
+
+类别变量之间的关系
+
+```{r}
+# 条形图查看类别变量之间的关系：性别与糖尿病的关系
+ggplot(diabetes_cleaned, aes(x = sex, fill = diabetes)) + 
+  geom_bar(position = "fill") + 
+  scale_fill_manual(values = c("#A3C9D1", "#FFB6B9")) +  # 选择柔和的配色
+  theme_minimal() + 
+  labs(title = "Diabetes by Gender", x = "Sex", y = "Proportion")
+
+# 条形图查看吸烟状态与糖尿病的关系
+ggplot(diabetes_cleaned, aes(x = smoker, fill = diabetes)) + 
+  geom_bar(position = "fill") + 
+  scale_fill_manual(values = c("#A3C9D1", "#FFB6B9")) +  # 选择柔和的配色
+  theme_minimal() + 
+  labs(title = "Diabetes by Smoking Status", x = "Smoker", y = "Proportion")
+
+
+```
+
+相关性分析
+
+```{r}
+# 计算数值变量之间的相关性
+correlation_matrix <- cor(diabetes_cleaned[, c("age", "weight", "height", "bmi")], use = "complete.obs")
+
+# 安装并加载 ggcorrplot
+install.packages("ggcorrplot")  # 如果没有安装ggcorrplot包，请取消注释
+library(ggcorrplot)
+
+# 可视化相关性矩阵，并使用温和的颜色
+ggcorrplot(correlation_matrix, 
+           lab = TRUE,               # 显示相关系数值
+           type = "lower",           # 只显示下三角
+           lab_size = 3,             # 调整标签字体大小
+           colors = c("#8BC6D1", "#B3CDE0", "#A1D9C7"),  # 温和的颜色
+           title = "Correlation Matrix",  # 标题
+           ggtheme = theme_minimal())   # 使用简洁的主题
+
+
+```
+
+特征变量之间的相关性
+
+```{r}
+# 安装并加载所需的包
+install.packages("ggcorrplot")  # 如果没有安装ggcorrplot包，请先运行此命令
+library(ggcorrplot)
+
+# 安装并加载 polycor 包
+install.packages("polycor")
+library(polycor)
+
+# 选择11个特征变量：包括连续型和类别型
+feature_vars <- c("age", "weight", "height", "bmi", "smoker", "sex", "coronary_heart_disease", 
+                  "hypertension", "heart_condition", "cancer", "family_history_diabetes")
+
+# 对类别型变量（如smoker, sex等）进行因子化处理，使其可以计算相关性
+diabetes_cleaned$smoker <- as.factor(diabetes_cleaned$smoker)
+diabetes_cleaned$sex <- as.factor(diabetes_cleaned$sex)
+diabetes_cleaned$coronary_heart_disease <- as.factor(diabetes_cleaned$coronary_heart_disease)
+diabetes_cleaned$hypertension <- as.factor(diabetes_cleaned$hypertension)
+diabetes_cleaned$heart_condition <- as.factor(diabetes_cleaned$heart_condition)
+diabetes_cleaned$cancer <- as.factor(diabetes_cleaned$cancer)
+diabetes_cleaned$family_history_diabetes <- as.factor(diabetes_cleaned$family_history_diabetes)
+
+# 计算数值型和类别型变量之间的相关性
+correlation_matrix <- matrix(NA, nrow = length(feature_vars), ncol = length(feature_vars))
+colnames(correlation_matrix) <- rownames(correlation_matrix) <- feature_vars
+
+for (i in 1:length(feature_vars)) {
+  for (j in 1:length(feature_vars)) {
+    if (is.numeric(diabetes_cleaned[[feature_vars[i]]]) && is.factor(diabetes_cleaned[[feature_vars[j]]])) {
+      # 使用 polyserial 计算数值型和无序类别型之间的相关性
+      correlation_matrix[i, j] <- polyserial(diabetes_cleaned[[feature_vars[i]]], diabetes_cleaned[[feature_vars[j]]])
+    } else if (is.factor(diabetes_cleaned[[feature_vars[i]]]) && is.numeric(diabetes_cleaned[[feature_vars[j]]])) {
+      # 使用 polyserial 计算无序类别型和数值型之间的相关性
+      correlation_matrix[i, j] <- polyserial(diabetes_cleaned[[feature_vars[j]]], diabetes_cleaned[[feature_vars[i]]])
+    } else if (is.ordered(diabetes_cleaned[[feature_vars[i]]]) && is.numeric(diabetes_cleaned[[feature_vars[j]]])) {
+      # 使用 polyserial 计算有序类别型和数值型之间的相关性
+      correlation_matrix[i, j] <- polyserial(diabetes_cleaned[[feature_vars[i]]], diabetes_cleaned[[feature_vars[j]]])
+    } else if (is.numeric(diabetes_cleaned[[feature_vars[i]]]) && is.numeric(diabetes_cleaned[[feature_vars[j]]])) {
+      # 使用 Pearson 计算数值型变量之间的相关性
+      correlation_matrix[i, j] <- cor(diabetes_cleaned[[feature_vars[i]]], diabetes_cleaned[[feature_vars[j]]], method = "pearson")
+    }
+  }
+}
+
+# 可视化相关性矩阵
+ggcorrplot(correlation_matrix, 
+           lab = TRUE,               # 显示相关系数值
+           type = "lower",           # 只显示下三角
+           lab_size = 3,             # 调整标签字体大小
+           colors = c("#FFFAF0", "#FF5733", "#C70039"),  # 更丰富的颜色渐变
+           title = "Correlation Matrix",  # 标题
+           ggtheme = theme_minimal(),   # 使用简洁的主题
+           method = "square")        # 使用方形网格
+
+
+
+```
+
+特征变量与响应变量之间的相关性研究
+
+```{r}
+# 1. 加载必要的库
+library(ggplot2)
+library(dplyr)
+install.packages("psych")
+library(psych)
+library(ggcorrplot)
+
+# 2. 计算连续型特征与响应变量 diabetes 的相关性
+# 选择所有连续型特征（age, weight, height, bmi）
+continuous_features <- c("age", "weight", "height", "bmi")
+
+# 计算每个连续型特征与响应变量 diabetes 的皮尔逊相关系数
+# 确保 diabetes 列是数值型
+diabetes_cleaned$diabetes <- as.numeric(as.factor(diabetes_cleaned$diabetes)) - 1
+
+# 计算每个连续型特征与响应变量 diabetes 的皮尔逊相关系数
+correlation_with_diabetes <- sapply(continuous_features, function(x) cor(diabetes_cleaned[[x]], diabetes_cleaned$diabetes, use = "complete.obs"))
+print("Continuous feature correlation with diabetes:")
+print(correlation_with_diabetes)
+
+
+# 3. 计算类别型特征与响应变量 diabetes 的相关性
+# 选择所有类别型特征（smoker, sex, coronary_heart_disease, hypertension, heart_condition, cancer, family_history_diabetes）
+categorical_features <- c("smoker", "sex", "coronary_heart_disease", "hypertension", "heart_condition", "cancer", "family_history_diabetes")
+
+# 使用点二列相关系数（Point-Biserial Correlation）计算每个类别变量与响应变量 diabetes 之间的相关性
+categorical_correlation <- sapply(categorical_features, function(x) cor.test(as.numeric(diabetes_cleaned[[x]]), diabetes_cleaned$diabetes)$estimate)
+print("Categorical feature correlation with diabetes:")
+print(categorical_correlation)
+
+# 4. 将所有相关性结果汇总为一个数据框
+correlation_results <- data.frame(
+  Feature = c(continuous_features, categorical_features),
+  Correlation = c(correlation_with_diabetes, categorical_correlation)
+)
+
+# 打印结果
+print("Correlation results for all features with diabetes:")
+print(correlation_results)
+
+# 5. 可视化相关性结果：条形图展示每个特征与 diabetes 的相关性
+ggplot(correlation_results, aes(x = Feature, y = Correlation, fill = Correlation)) + 
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  theme_minimal() +
+  coord_flip() +
+  labs(title = "Feature-Response Variable Correlation", x = "Features", y = "Correlation with Diabetes") +
+  scale_fill_gradientn(colors = c("#FFFAF0", "#FF5733", "#C70039")) # 设置渐变颜色
+
+# 6. 计算所有数值变量之间的相关性矩阵
+correlation_matrix <- cor(diabetes_cleaned[, c("age", "weight", "height", "bmi")], use = "complete.obs")
+
+# 可视化相关性矩阵
+ggcorrplot(correlation_matrix, 
+           lab = TRUE,               # 显示相关系数值
+           type = "lower",           # 只显示下三角
+           lab_size = 3,             # 调整标签字体大小
+           colors = c("#FFFAF0", "#FF5733", "#C70039"),  # 使用相同的渐变颜色
+           title = "Correlation Matrix",  # 标题
+           ggtheme = theme_minimal(),   # 使用简洁的主题
+           method = "square")        # 使用方形网格
+
+
+
+```
