@@ -23,12 +23,12 @@ The following code sets up the libraries and creates cleaned and pre-processed t
 library(tidyverse)
 library(janitor)
 library(fastDummies)
-# 引入必要的库
-library(caret) # 用于训练和评估模型
+
+library(caret) # For training and evaluating models
 library(randomForest) # Bagging (Random Forest)
 library(e1071) # SVM
 library(class) # KNN
-library(yardstick) # 用于评估指标
+library(yardstick) # Used to evaluate metrics
 library(patchwork)
 library(lubridate)
 library(scales)
@@ -91,12 +91,11 @@ knn_fit <- train(factor(diabetes) ~ .,
 
 # View the results (best k value and accuracy)
 print(knn_fit)
-# 使用交叉验证选择的最佳k值对训练数据进行预测
+# Make predictions on the training data using the best k value selected by cross-validation
 knn_predictions_train <- predict(knn_fit, newdata = diabetes_train_preprocessed)
 
-# 查看训练数据的预测结果
+# View the predictive results of your training data
 head(knn_predictions_train)
-
 ```
 
 ## Fitting logistic regression to the full training dataset
@@ -108,16 +107,16 @@ lr_fit <- glm(factor(diabetes) ~ .,
                    data = diabetes_train_preprocessed, 
                    family = "binomial")
 
-# 查看模型的概况
+
 summary(lr_fit)
 
-# 逻辑回归模型对训练数据的预测
+
 lr_predictions_train <- predict(lr_fit, newdata = diabetes_train_preprocessed, type = "response")
 
-# 将预测结果转换为二分类（大于0.5为1，否则为0）
+
 lr_predictions_train_class <- ifelse(lr_predictions_train > 0.5, 1, 0)
 
-# 查看训练数据的预测结果
+
 head(lr_predictions_train_class)
 ```
 
@@ -126,38 +125,40 @@ head(lr_predictions_train_class)
 First, we will create 1000 bootstrapped (sampled with replacement) versions of the training dataset, and we will compute a logistic regression fit to each bootstrapped training data sample.
 
 ```{r}
-# 加载必要的库
-library(dplyr)
+install.packages("tibble")
+
+library(tibble)
+
 library(purrr)
 
-# 设置随机种子以确保结果可重复
-set.seed(27398)
+library(dplyr)
 
-# 创建1000个bootstrap样本并计算每个样本上的系数
+
 boot_coefs <- map_df(1:1000, function(i) {
-  # 创建一个bootstrap样本
+  # Create a bootstrap sample
   diabetes_boot <- diabetes_train_preprocessed |> 
     sample_frac(1, replace = TRUE)
   
-  # 拟合逻辑回归模型
+ 
   lr_boot <- glm(factor(diabetes) ~ ., 
                  data = diabetes_boot, 
                  family = "binomial")
   
-  # 返回每个模型的系数
+ # Returns the coefficients for each model
   return(enframe(lr_boot$coefficients, name = "variable", value = "coefficient"))
 }, .id = "boot")
+
 ```
 
 ```{r}
-# 查看生成的bootstrap系数
+
 head(boot_coefs)
 ```
 
 Having computed 1000 bootstrapped coefficient values, we can compute their standard deviation, and use this value to standardize the original coefficient values
 
 ```{r}
-# 计算bootstrap系数的标准差并标准化原始系数
+# Calculate the standard deviation of the bootstrap coefficient and standardize the original coefficient
 coefs_std <- boot_coefs |>
   group_by(variable) |>
   summarise(boot_sd = sd(coefficient)) |>
@@ -171,28 +172,78 @@ coefs_std <- boot_coefs |>
   filter(variable != "(Intercept)") |>
   select(variable, coefficient, boot_sd, standardized_coefficient)
 
-# 查看标准化后的系数
+
 print(coefs_std, width = Inf)
 ```
+
+**High standardized coefficients**: For example, `family_history_diabetes`, `age`, and `hypertension` have very large standardized coefficients, meaning these variables have a significant impact on predicting diabetes, and their influence is stable.
+
+**Negative impact features**: For example, `height` and `bmi` have negative coefficients, indicating a negative correlation between these features and the risk of diabetes. The standardized values also show that their impact is relatively small, but they might still have statistical significance.
+
+**Low standardized coefficients**: Variables like `bmi` and `smoker` have smaller standardized coefficients, suggesting that their influence is relatively weak.
 
 ## Fitting SVM to the full training dataset
 
 Compute a SVM fit for the entire training dataset:
 
 ```{r}
-# Load the necessary library
-library(e1071)
 
-# Fit the SVM model
-svm_fit <- svm(factor(diabetes) ~ ., 
-                    data = diabetes_train_preprocessed, 
-                    kernel = "radial")  # 你可以选择其他核函数
+library(e1071)  
+library(kernlab)  
+library(caret)  
+library(pROC) 
 
-# 使用训练好的 SVM 模型进行训练数据的预测
-svm_predictions_train <- predict(svm_fit, newdata = diabetes_train_preprocessed)
 
-# 查看训练数据的预测结果
-head(svm_predictions_train)
+set.seed(123)
+
+# Select a small sample to adjust the parameters
+
+small_sample <- diabetes_train_preprocessed[sample(1:nrow(diabetes_train_preprocessed), 1000), ]
+
+# Use e1071's tune function for SVM parameter tuning
+svm_tune <- tune(
+  svm, 
+  factor(diabetes) ~ ., 
+  data = small_sample, 
+  ranges = list(
+    kernel = c("linear", "radial"),  
+    cost = 2^(2:3),                 
+    gamma = 2^(-1:0)                
+  )
+)
+
+
+print(svm_tune)
+
+
+best_model <- svm_tune$best.model
+print(summary(best_model))
+
+# Efficient SVM implementation using the kernlab package
+ksvm_model <- ksvm(
+  factor(diabetes) ~ ., 
+  data = small_sample, 
+  kernel = "rbfdot",  # RBF 核函数
+  C = best_model$cost, 
+  kpar = list(sigma = 1 / (2 * best_model$gamma))  
+)
+print(ksvm_model)
+
+# Use the caret package for random searches
+control <- trainControl(method = "cv", number = 3, search = "random")  
+svm_random_tune <- train(
+  factor(diabetes) ~ ., 
+  data = small_sample, 
+  method = "svmRadial", 
+  tuneLength = 5,  
+  trControl = control,
+  prob.model = TRUE  
+)
+print(svm_random_tune)
+
+
+best_caret_model <- svm_random_tune$finalModel
+print(best_caret_model)
 
 ```
 
@@ -201,46 +252,1307 @@ head(svm_predictions_train)
 Compute a Bagging(RF) fit for the entire training dataset:
 
 ```{r}
-# Load the necessary library
-library(randomForest)
+library(caret)
 
-# Bagging (RF) Fit
-rf_fit <- randomForest(factor(diabetes) ~ ., 
-                            data = diabetes_train_preprocessed, 
-                            ntree = 500,  # Number of trees (you can adjust)
-                            mtry = sqrt(ncol(diabetes_train_preprocessed) - 1),  # Default: sqrt(p)
-                            importance = TRUE)  # View variable importance
 
-# View the model summary
-print(rf_diabetes)
+set.seed(123)
+
+# Select a small sample for training
+small_sample <- diabetes_train_preprocessed[sample(1:nrow(diabetes_train_preprocessed), 1000), ]
+
+
+train_control <- trainControl(
+  method = "cv", 
+  number = 5,         
+  verboseIter = FALSE  
+)
+
+
+rf_grid <- expand.grid(
+  mtry = c(2, sqrt(ncol(small_sample) - 1))  
+)
+
+
+rf_fit <- train(
+  factor(diabetes) ~ ., 
+  data = small_sample,  
+  method = "rf", 
+  trControl = train_control, 
+  tuneGrid = rf_grid,
+  ntree = 100  
+)
+
+
+print(rf_fit)
+
 ```
 
-## Evaluating binary predictions for a sample of 20 validation points
+## Evaluating binary predictions for a sample of 100 validation points
+
+First, let's start by evaluating our predictions using just a random sample of 100 validation set sessions.
+
+```{r}
+set.seed(123)
+
+
+validation_sample <- diabetes_val_preprocessed[sample(1:nrow(diabetes_val_preprocessed), 100), ]
+
+
+```
+
+First, let's print out the observed and predicted (using KNN , logistic regression, SVM and Bagging fit to the full training set) diabetes response for these 100 validation sessions.
+
+```{r}
+# 1. KNN 
+knn_predictions <- predict(knn_fit, newdata = validation_sample)
+```
+
+```{r}
+# 2. Logistic 
+lr_predictions <- predict(lr_fit, newdata = validation_sample, type = "response")
+lr_predictions_class <- ifelse(lr_predictions > 0.5, 1, 0)
+```
+
+```{r}
+# 3. SVM 
+
+
+
+
+
+library(e1071)
+library(kernlab)
+library(caret)
+
+# Use e1071's best_model to make predictions
+predictions_e1071 <- predict(best_model, validation_sample)
+
+# Use kernlab's ksvm_model for prediction
+predictions_ksvm <- predict(ksvm_model, validation_sample)
+
+diabetes_train_preprocessed$smoker <- as.factor(diabetes_train_preprocessed$smoker)
+diabetes_train_preprocessed$sex <- as.factor(diabetes_train_preprocessed$sex)
+diabetes_train_preprocessed$coronary_heart_disease <- as.factor(diabetes_train_preprocessed$coronary_heart_disease)
+diabetes_train_preprocessed$hypertension <- as.factor(diabetes_train_preprocessed$hypertension)
+diabetes_train_preprocessed$heart_condition <- as.factor(diabetes_train_preprocessed$heart_condition)
+diabetes_train_preprocessed$cancer <- as.factor(diabetes_train_preprocessed$cancer)
+diabetes_train_preprocessed$family_history_diabetes <- as.factor(diabetes_train_preprocessed$family_history_diabetes)
+diabetes_train_preprocessed$diabetes <- as.factor(diabetes_train_preprocessed$diabetes)
+
+# Do the same preprocessing for validation_sample
+validation_sample$smoker <- as.factor(validation_sample$smoker)
+validation_sample$sex <- as.factor(validation_sample$smoker)
+validation_sample$coronary_heart_disease <- as.factor(validation_sample$coronary_heart_disease)
+validation_sample$hypertension <- as.factor(validation_sample$hypertension)
+validation_sample$heart_condition <- as.factor(validation_sample$heart_condition)
+validation_sample$cancer <- as.factor(validation_sample$cancer)
+validation_sample$family_history_diabetes <- as.factor(validation_sample$family_history_diabetes)
+
+
+
+# Ensure that the value variable is of a numeric type
+validation_sample$age <- as.numeric(validation_sample$age)
+validation_sample$weight <- as.numeric(validation_sample$weight)
+validation_sample$height <- as.numeric(validation_sample$height)
+validation_sample$bmi <- as.numeric(validation_sample$bmi)
+
+
+
+
+
+print(predictions_e1071)
+print(predictions_ksvm)
+
+```
+
+```{r}
+# 4. Bagging (Random forest) prediction
+bagging_predictions <- predict(rf_fit, newdata = validation_sample)
+```
 
 ### The confusion matrix
 
+The confusion matrix for the KNN fit is
+
+```{r}
+# KNN 
+conf_knn <- confusionMatrix(knn_predictions, factor(validation_sample$diabetes))$table
+
+```
+
+and for the logistic regression fit, the confusion matrix (again, for now, based on a threshold of 0.5) is:
+
+```{r}
+# Logistic 
+conf_lr <- confusionMatrix(factor(lr_predictions_class), factor(validation_sample$diabetes))$table
+
+```
+
+and for the SVM fit, the confusion matrix is:
+
+```{r}
+# SVM 
+# 
+predictions_e1071 <- factor(predictions_e1071, levels = levels(factor(validation_sample$diabetes)))
+predictions_ksvm <- factor(predictions_ksvm, levels = levels(factor(validation_sample$diabetes)))
+# 
+conf_svm_e1071 <- confusionMatrix(predictions_e1071, factor(validation_sample$diabetes))$table
+conf_svm_ksvm <- confusionMatrix(predictions_ksvm, factor(validation_sample$diabetes))$table
+
+
+```
+
+and for the Bagging fit, the confusion matrix is:
+
+```{r}
+# Bagging 
+conf_bagging <- confusionMatrix(factor(bagging_predictions), factor(validation_sample$diabetes))$table
+
+```
+
+```{r}
+cat("\nObserved and Predicted Values for Validation Sample (20 samples):\n")
+
+# Randomly select 20 samples to print results
+set.seed(456)
+sample_indices <- sample(1:100, 20)
+validation_observed <- validation_sample$diabetes[sample_indices]
+
+knn_pred_sample <- knn_predictions[sample_indices]
+lr_pred_sample <- lr_predictions_class[sample_indices]
+svm_pred_sample_e1071 <- predictions_e1071[sample_indices]
+svm_pred_sample_ksvm <- predictions_ksvm[sample_indices]
+bagging_pred_sample <- bagging_predictions[sample_indices]
+
+results <- data.frame(
+  Observed = validation_observed,
+  KNN = knn_pred_sample,
+  Logistic = lr_pred_sample,
+  SVM_e1701 = svm_pred_sample_e1071,
+  SVM_ksvm = svm_pred_sample_ksvm,
+  Bagging = bagging_pred_sample
+)
+print(results)
+```
+
 ### Prediction accuracy
+
+```{r}
+# Accuracy 
+calculate_accuracy <- function(conf_matrix) {
+  (conf_matrix[1, 1] + conf_matrix[2, 2]) / sum(conf_matrix)
+}
+
+accuracy_knn <- calculate_accuracy(conf_knn)
+accuracy_lr <- calculate_accuracy(conf_lr)
+accuracy_svm_e1701 <- calculate_accuracy(conf_svm_e1071)
+accuracy_svm_ksvm <- calculate_accuracy(conf_svm_ksvm)
+accuracy_bagging <- calculate_accuracy(conf_bagging)
+
+cat("Accuracy:\n")
+cat("KNN:", accuracy_knn, "\n")
+cat("Logistic Regression:", accuracy_lr, "\n")
+cat("SVM by e1701:", accuracy_svm_e1701, "\n")
+cat("SVM by ksvm:", accuracy_svm_ksvm, "\n")
+cat("Bagging (RF):", accuracy_bagging, "\n")
+
+```
 
 ### Precision
 
+```{r}
+# Precision 
+calculate_precision <- function(conf_matrix) {
+  conf_matrix[2, 2] / sum(conf_matrix[, 2])
+}
+
+precision_knn <- calculate_precision(conf_knn)
+precision_lr <- calculate_precision(conf_lr)
+precision_svm_e1071 <- calculate_precision(conf_svm_e1071)
+precision_svm_ksvm <- calculate_precision(conf_svm_ksvm)
+precision_bagging <- calculate_precision(conf_bagging)
+
+cat("Precision:\n")
+cat("KNN:", precision_knn, "\n")
+cat("Logistic Regression:", precision_lr, "\n")
+cat("SVM by e1701:", precision_svm_e1071, "\n")
+cat("SVM by ksvm:", precision_svm_ksvm, "\n")
+cat("Bagging (RF):", precision_bagging, "\n")
+
+```
+
 ### Recall
+
+```{r}
+# Recall 
+calculate_recall <- function(conf_matrix) {
+  conf_matrix[2, 2] / sum(conf_matrix[2, ])
+}
+
+recall_knn <- calculate_recall(conf_knn)
+recall_lr <- calculate_recall(conf_lr)
+recall_svm_e1701 <- calculate_recall(conf_svm_e1071)
+recall_svm_ksvm <- calculate_recall(conf_svm_ksvm)
+recall_bagging <- calculate_recall(conf_bagging)
+
+cat("Recall:\n")
+cat("KNN:", recall_knn, "\n")
+cat("Logistic Regression:", recall_lr, "\n")
+cat("SVM by e1701:", recall_svm_e1701, "\n")
+cat("SVM by ksvm:", recall_svm_ksvm, "\n")
+cat("Bagging (RF):", recall_bagging, "\n")
+
+```
 
 ### F1 score
 
+```{r}
+# F1 Score 
+calculate_f1 <- function(precision, recall) {
+  2 * (precision * recall) / (precision + recall)
+}
+
+f1_knn <- calculate_f1(precision_knn, recall_knn)
+f1_lr <- calculate_f1(precision_lr, recall_lr)
+f1_svm_e1701 <- calculate_f1(precision_svm_e1071, recall_svm_e1701)
+f1_svm_ksvm <- calculate_f1(precision_svm_ksvm, recall_svm_ksvm)
+f1_bagging <- calculate_f1(precision_bagging, recall_bagging)
+
+cat("F1 Score:\n")
+cat("KNN:", f1_knn, "\n")
+cat("Logistic Regression:", f1_lr, "\n")
+cat("SVM by e1701:", f1_svm_e1701, "\n")
+cat("SVM by ksvm:", f1_svm_ksvm, "\n")
+cat("Bagging (RF):", f1_bagging, "\n")
+
+```
+
 ### True positiveand true negative rate
+
+```{r}
+calculate_sensitivity_specificity <- function(conf_matrix) {
+  if (!is.matrix(conf_matrix) || nrow(conf_matrix)!= 2 || ncol(conf_matrix)!= 2) {
+    stop("The confusion matrix should be a 2x2 matrix.")
+  }
+  tp <- conf_matrix[2, 2]
+  tn <- conf_matrix[1, 1]
+  fp <- conf_matrix[1, 2]
+  fn <- conf_matrix[2, 1]
+  sensitivity <- tp / (tp + fn)
+  specificity <- tn / (tn + fp)
+  return(list(sensitivity = sensitivity, specificity = specificity))
+}
+
+
+
+metrics_knn <- calculate_sensitivity_specificity(conf_knn)
+metrics_lr <- calculate_sensitivity_specificity(conf_lr)
+metrics_svm_e1701 <- calculate_sensitivity_specificity(conf_svm_e1071)
+metrics_svm_ksvm <- calculate_sensitivity_specificity(conf_svm_ksvm)
+metrics_bagging <- calculate_sensitivity_specificity(conf_bagging)
+
+
+
+cat("KNN Model:\n")
+cat("Sensitivity:", metrics_knn$sensitivity, "\n")
+cat("Specificity:", metrics_knn$specificity, "\n\n")
+
+
+cat("Logistic Regression Model:\n")
+cat("Sensitivity:", metrics_lr$sensitivity, "\n")
+cat("Specificity:", metrics_lr$specificity, "\n\n")
+
+
+cat("SVM (e1701) Model:\n")
+cat("Sensitivity:", metrics_svm_e1701$sensitivity, "\n")
+cat("Specificity:", metrics_svm_e1701$specificity, "\n\n")
+
+
+cat("SVM (ksvm) Model:\n")
+cat("Sensitivity:", metrics_svm_ksvm$sensitivity, "\n")
+cat("Specificity:", metrics_svm_ksvm$specificity, "\n\n")
+
+
+cat("Bagging (RF) Model:\n")
+cat("Sensitivity:", metrics_bagging$sensitivity, "\n")
+cat("Specificity:", metrics_bagging$specificity, "\n\n")
+
+
+
+comparison_df <- data.frame(
+  Model = c("KNN", "Logistic Regression", "SVM (e1701)", "SVM (ksvm)", "Bagging (RF)"),
+  Sensitivity = c(metrics_knn$sensitivity, metrics_lr$sensitivity, metrics_svm_e1701$sensitivity, metrics_svm_ksvm$sensitivity, metrics_bagging$sensitivity),
+  Specificity = c(metrics_knn$specificity, metrics_lr$specificity, metrics_svm_e1701$specificity, metrics_svm_ksvm$specificity, metrics_bagging$specificity)
+)
+
+
+
+print(comparison_df)
+```
 
 ### Predicted probability densities
 
+```{r}
+library(ggplot2)
+library(dplyr)
+
+
+
+validation_sample$diabetes <- as.factor(validation_sample$diabetes)
+
+
+validation_sample %>%
+  mutate(knn_prob = as.numeric(knn_predictions)) %>%  
+  ggplot(aes(x = knn_prob, fill = diabetes)) +  
+  geom_density(alpha = 0.5) +
+  scale_x_continuous(limits = c(0, 1)) +
+  labs(title = "KNN Predicted Probability Distribution",
+       x = "Predicted Probability",
+       y = "Density") +
+  scale_fill_manual(values = c("#FF8C00", "#6495ED")) 
+
+```
+
+```{r}
+
+lr_predictions <- predict(lr_fit, newdata = validation_sample, type = "response")
+
+
+validation_sample$diabetes <- as.factor(validation_sample$diabetes)
+
+
+validation_sample %>%
+  mutate(lr_predictions = lr_predictions) %>%
+  ggplot(aes(x = lr_predictions, fill = diabetes)) +  # 使用 lr_predictions 作为 x 轴
+  geom_density(alpha = 0.5) +
+  scale_x_continuous(limits = c(0, 1)) +
+  labs(title = "Logistic Regression Predicted Probability Distribution",
+       x = "Predicted Probability",
+       y = "Density") +
+  scale_fill_manual(values = c("#FF8C00", "#6495ED"))  # 设置柔和的填充色
+
+
+```
+
+```{r}
+# 加载必要的包
+library(ggplot2)
+library(dplyr)
+
+
+predictions_e1071 <- as.numeric(predictions_e1071) 
+
+
+validation_sample$diabetes <- as.factor(validation_sample$diabetes)
+
+
+validation_sample %>%
+  mutate(svm_prob = predictions_e1071) %>%  
+  ggplot(aes(x = svm_prob, fill = diabetes)) +  
+  geom_density(alpha = 0.5) +
+  scale_x_continuous(limits = c(0, 1)) +  
+  labs(title = "SVM by e1071 Predicted Probability Distribution",
+       x = "Predicted Probability",
+       y = "Density") +
+  scale_fill_manual(values = c("#FF8C00", "#6495ED"))  
+
+```
+
+```{r}
+
+library(ggplot2)
+library(dplyr)
+
+
+predictions_ksvm <- as.numeric(predictions_ksvm)  
+
+
+validation_sample$diabetes <- as.factor(validation_sample$diabetes)
+
+
+validation_sample %>%
+  mutate(svm_prob = predictions_ksvm) %>%  
+  ggplot(aes(x = svm_prob, fill = diabetes)) + 
+  geom_density(alpha = 0.5) +  
+  scale_x_continuous(limits = c(0, 1)) +  
+  labs(title = "SVM by ksvm Predicted Probability Distribution",
+       x = "Predicted Probability",
+       y = "Density") +
+  scale_fill_manual(values = c("#FF8C00", "#6495ED"))  
+
+```
+
 ### ROC curves and AUC-ROC
+
+```{r}
+
+install.packages("pROC")
+library(pROC)
+
+
+
+if (!is.numeric(bagging_predictions)) {
+  if (is.factor(bagging_predictions)) {
+    
+    bagging_predictions <- as.numeric(as.character(bagging_predictions)) - 1
+  } else {
+    stop("bagging_predictions has unexpected data type.")
+  }
+}
+
+
+
+roc_knn <- roc(validation_sample$diabetes, as.numeric(knn_predictions))
+roc_lr <- roc(validation_sample$diabetes, lr_predictions)
+
+roc_svm_e1701_model <- roc(validation_sample$diabetes, as.numeric(predictions_e1071))
+
+roc_svm_ksvm_model <- roc(validation_sample$diabetes, as.numeric(predictions_ksvm))
+
+roc_bagging <- roc(validation_sample$diabetes, bagging_predictions)
+
+
+
+plot(roc_knn, col = "#A6CEE3", main = "ROC Curves", lwd = 2)
+lines(roc_lr, col = "#1F78B4", lwd = 2)
+lines(roc_svm_e1701_model, col = "#33A02C", lwd = 2)
+lines(roc_svm_ksvm_model, col = "#FF7F00", lwd = 2)
+lines(roc_bagging, col = "#FB9A99", lwd = 2)
+
+
+# 添加图例
+legend("bottomright", legend = c("KNN", "Logistic Regression", "SVM (e1071)", "SVM (caret)", "Bagging (RF)"), 
+       col = c("#A6CEE3", "#1F78B4", "#33A02C", "#FF7F00", "#FB9A99"), lwd = 2)
+```
+
+```{r}
+
+auc_knn <- auc(roc_knn)
+auc_lr <- auc(roc_lr)
+auc_svm_e1701 <- auc(roc_svm_e1701_model)
+auc_svm_ksvm <- auc(roc_svm_ksvm_model)
+auc_bagging <- auc(roc_bagging)
+
+cat("AUC:\n")
+cat("KNN:", auc_knn, "\n")
+cat("Logistic Regression:", auc_lr, "\n")
+cat("SVM by e1701:", auc_svm_e1701, "\n")
+cat("SVM by ksvm:", auc_svm_ksvm, "\n")
+cat("Bagging (RF):", auc_bagging, "\n")
+
+```
 
 ### Log-Loss
 
+```{r}
+
+log_loss <- function(observed, predicted_prob) {
+  epsilon <- 1e-15
+  predicted_prob <- pmax(epsilon, pmin(1 - epsilon, predicted_prob))
+  -mean(observed * log(predicted_prob) + (1 - observed) * log(1 - predicted_prob))
+}
+
+
+
+validation_sample$diabetes <- as.numeric(validation_sample$diabetes)
+
+
+
+knn_predictions <- as.numeric(knn_predictions)
+lr_predictions <- as.numeric(lr_predictions)
+predictions_e1071 <- as.numeric(predictions_e1071)
+predictions_ksvm <- as.numeric(predictions_ksvm)
+bagging_predictions <- as.numeric(bagging_predictions)
+
+
+
+log_loss_knn <- log_loss(validation_sample$diabetes, knn_predictions)
+log_loss_lr <- log_loss(validation_sample$diabetes, lr_predictions)
+log_loss_svm_e1701 <- log_loss(validation_sample$diabetes, predictions_e1071)
+log_loss_svm_ksvm <- log_loss(validation_sample$diabetes, predictions_ksvm)
+log_loss_bagging <- log_loss(validation_sample$diabetes, bagging_predictions)
+
+
+
+cat("Log-Loss:\n")
+cat("KNN:", log_loss_knn, "\n")
+cat("Logistic Regression:", log_loss_lr, "\n")
+cat("SVM by e1701:", log_loss_svm_e1701, "\n")
+cat("SVM by ksvm:", log_loss_svm_ksvm, "\n")
+cat("Bagging (RF):", log_loss_bagging, "\n")
+
+```
+
 ### Matthews Correlation Coefficient
+
+```{r}
+
+mcc <- function(conf_matrix) {
+ 
+  if (!is.matrix(conf_matrix) &&!is.data.frame(conf_matrix)) {
+    stop("Input should be a matrix or data frame.")
+  }
+  tp <- conf_matrix[2, 2]
+  tn <- conf_matrix[1, 1]
+  fp <- conf_matrix[1, 2]
+  fn <- conf_matrix[2, 1]
+  numerator <- (tp * tn) - (fp * fn)
+  denominator <- sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+  if (denominator == 0) return(0)
+  numerator / denominator
+}
+
+
+
+
+
+mcc_knn <- mcc(conf_knn)
+mcc_lr <- mcc(conf_lr)
+mcc_svm_e1701 <- mcc(conf_svm_e1071)
+mcc_svm_ksvm <- mcc(conf_svm_ksvm)
+mcc_bagging <- mcc(conf_bagging)
+
+
+cat("MCC:\n")
+cat("KNN:", mcc_knn, "\n")
+cat("Logistic Regression:", mcc_lr, "\n")
+cat("SVM by e1701:", mcc_svm_e1701, "\n")
+cat("SVM by ksvm:", mcc_svm_ksvm, "\n")
+cat("Bagging (RF):", mcc_bagging, "\n")
+```
 
 ## PCS evaluations
 
 ### Predictability (evaluating binary predictions for the full validation set)
 
+```{r}
+library(dplyr)
+
+# compute the proportion of training observations in each class
+diabetes_val_preprocessed |>
+  count(diabetes) |>
+  mutate(prop = n / sum(n))
+```
+
+We need to compute the predictions for the validation set.
+
+```{r}
+
+library(tibble)
+library(e1071)
+library(caret)
+library(kernlab)
+
+# KNN 
+knn_predict <- predict(knn_fit, newdata = diabetes_val_preprocessed)
+
+# Logistic Regression
+lr_predict <- predict(lr_fit, newdata = diabetes_val_preprocessed, type = "response")
+lr_predict_class <- ifelse(lr_predict > 0.5, 1, 0)
+
+# Prediction using SVM model of e1071
+e1071_predict <- predict(best_model, newdata = diabetes_val_preprocessed)
+
+# SVM model prediction using kernlab
+ksvm_predict <- predict(ksvm_model, newdata = diabetes_val_preprocessed)
+
+# Bagging (Random forest) prediction
+bagging_predict <- predict(rf_fit, newdata = diabetes_val_preprocessed)
+
+
+pred_val <- tibble(
+  diabetes = diabetes_val_preprocessed$diabetes,
+  knn_predict = knn_predict,
+  lr_predict = lr_predict_class,  
+  e1071_predict = as.factor(e1071_predict),
+  ksvm_predict = as.factor(ksvm_predict),
+  bagging_predict = as.factor(bagging_predict)
+)
+```
+
+Then we can compute many of the performance metrics at once:
+
+```{r}
+
+library(tidyr)     
+library(dplyr)     
+library(yardstick) 
+
+
+pred_val <- pred_val %>%
+  mutate(across(c("knn_predict", "lr_predict", "e1071_predict", "ksvm_predict", "bagging_predict"), as.numeric))
+
+
+pred_val_long <- pred_val %>%
+  pivot_longer(cols = c("knn_predict", "lr_predict", "e1071_predict", "ksvm_predict", "bagging_predict"), 
+               names_to = "fit", values_to = "pred") %>%
+  mutate(pred_binary = factor(ifelse(pred > 0.5, 1, 0), levels = c(0, 1)))  
+
+
+metrics <- pred_val_long %>%
+  group_by(fit) %>%
+  summarise(
+    accuracy = accuracy_vec(truth = diabetes, estimate = pred_binary),
+    tp_rate = sens_vec(truth = diabetes, estimate = pred_binary),
+    tn_rate = spec_vec(truth = diabetes, estimate = pred_binary),
+    auc = roc_auc_vec(truth = diabetes, estimate = pred)
+  )
+
+
+print(metrics)
+
+```
+
+And we can plot ROC curves:
+
+```{r}
+
+lr_predict <- predict(lr_fit, newdata = diabetes_val_preprocessed, type = "response")
+
+
+pred_val <- pred_val %>%
+  mutate(
+    lr_predict = as.numeric(lr_predict),  
+    knn_predict = as.numeric(knn_predict),  
+    e1071_predict = as.numeric(e1071_predict),
+    ksvm_predict = as.numeric(ksvm_predict),
+    bagging_predict = as.numeric(bagging_predict)
+  )
+
+
+
+pred_val_long %>%
+  group_by(fit) %>%
+  roc_curve(truth = diabetes, pred) %>%  
+  ggplot(aes(x = 1 - specificity, y = sensitivity, color = fit)) +
+  geom_line() +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  labs(title = "ROC Curves for Different Models", 
+       x = "False Positive Rate (1 - Specificity)", 
+       y = "True Positive Rate (Sensitivity)") +
+  theme_minimal() +
+  theme(legend.title = element_blank())  
+
+
+```
+
+```{r}
+library(yardstick)
+
+
+pred_val_long %>%
+  group_by(fit) %>%
+  summarise(
+    accuracy = accuracy_vec(truth = diabetes, estimate = pred_binary),
+    tp_rate = sens_vec(truth = diabetes, estimate = pred_binary),
+    tn_rate = spec_vec(truth = diabetes, estimate = pred_binary),
+    auc = roc_auc_vec(truth = diabetes, estimate = pred)
+  )
+
+
+```
+
 ### Stability to data perturbations
 
+To investigate the stability of each algorithm to data perturbations (specifically, bootstrap samples), we will first create 100 perturbed versions of the training dataset and store them in a tibble as a list column:
+
+```{r}
+set.seed(37698)
+
+# Create 100 perturbed versions of the training data
+diabetes_data_perturbed <- tibble(iter = 1:100) %>%
+  rowwise() %>%
+  # Create a sampled version of bootstrap for each row
+  mutate(data_train_preprocessed_perturbed = list(sample_frac(diabetes_train_preprocessed, size = 1, replace = TRUE))) %>%
+  ungroup()
+
+
+diabetes_data_perturbed
+
+```
+
+Then we can fit a KNN, logistic regression, SVM and Bagging(RF) fit to each perturbed dataset (and store these in list columns too). For each KNN, logistic regression, SVM and Bagging(RF) fit, we can then compute the validation set predictions and compute the relevant performance measures.
+
+First, we will do this for the KNN fits:
+
+```{r}
+# KNN fitting for each perturbed data set
+diabetes_data_perturbed_knn <- diabetes_data_perturbed %>%
+  rowwise() %>%
+  
+  mutate(knn = list(train(diabetes ~ ., data = data_train_preprocessed_perturbed, method = "knn", tuneGrid = data.frame(k = 33)))) %>%
+  
+  mutate(true = list(factor(diabetes_val_preprocessed$diabetes, levels = c(1, 0)))) %>%
+  
+  mutate(pred = list(predict(knn, diabetes_val_preprocessed, type = "prob")[, 2])) %>%
+  
+  mutate(
+    auc = roc_auc_vec(true, pred), 
+    tp_rate = sens_vec(true, factor(as.numeric(pred > 0.5), levels = c(1, 0))),
+    tn_rate = spec_vec(true, factor(as.numeric(pred > 0.5), levels = c(1, 0))),
+    accuracy = accuracy_vec(true, factor(as.numeric(pred > 0.5), levels = c(1, 0))),
+    .after = "pred"
+  ) %>%
+  ungroup()
+
+
+print(diabetes_data_perturbed_knn, width = Inf)
+```
+
+And then for the logistic regression fits:
+
+```{r}
+#Logistic regression fitting is performed for each disturbed data set
+diabetes_data_perturbed_lr <- diabetes_data_perturbed %>%
+  rowwise() %>%
+  
+  mutate(lr = list(glm(factor(diabetes, levels = c(0, 1)) ~ ., 
+                       data = data_train_preprocessed_perturbed,
+                       family = "binomial"))) %>%
+
+  mutate(true = list(factor(diabetes_val_preprocessed$diabetes, levels = c(0, 1)))) %>%
+  
+  mutate(pred = list(predict(lr, diabetes_val_preprocessed, type = "response"))) %>%
+  
+  mutate(
+    auc = roc_auc_vec(true, pred), 
+    tp_rate = sens_vec(true, factor(as.numeric(pred > 0.5), levels = c(0, 1))),
+    tn_rate = spec_vec(true, factor(as.numeric(pred > 0.5), levels = c(0, 1))),
+    accuracy = accuracy_vec(true, factor(as.numeric(pred > 0.5), levels = c(0, 1))),
+    .after = "pred"
+  ) %>%
+  ungroup()
+
+
+print(diabetes_data_perturbed_lr, width = Inf)
+```
+
+And then for the SVM by e1071 fits:
+
+```{r}
+# SVM fitting for each perturbed dataset
+library(e1071)
+library(dplyr)
+library(yardstick)
+
+# 逐个处理每个扰动数据集
+diabetes_data_perturbed_svm <- diabetes_data_perturbed %>%
+  rowwise() %>%
+  mutate(
+    # 训练SVM模型
+    svm_model = list(svm(factor(diabetes, levels = c(0, 1)) ~ ., 
+                         data = data_train_preprocessed_perturbed, 
+                         probability = TRUE))
+  ) %>%
+  mutate(
+    # 获取预测概率
+    pred_prob = list(predict(svm_model, diabetes_val_preprocessed, type = "probabilities")[, 2]),
+    # 获取验证集真实标签
+    true = list(factor(diabetes_val_preprocessed$diabetes, levels = c(0, 1))),
+    # 计算评估指标
+    auc = roc_auc_vec(true, pred_prob),
+    tp_rate = sens_vec(true, factor(as.numeric(pred_prob > 0.5), levels = c(0, 1))),
+    tn_rate = spec_vec(true, factor(as.numeric(pred_prob > 0.5), levels = c(0, 1))),
+    accuracy = accuracy_vec(true, factor(as.numeric(pred_prob > 0.5), levels = c(0, 1))),
+    .after = "pred_prob"
+  ) %>%
+  ungroup()
+
+# 查看结果
+print(diabetes_data_perturbed_svm, width = Inf)
+
+```
+
+And then for the SVM by ksvm fits:
+
+```{r}
+# ksvm fitting for each perturbed data set
+diabetes_data_perturbed_ksvm <- diabetes_data_perturbed %>%
+  rowwise() %>%
+  mutate(
+    ksvm_model = list(ksvm(factor(diabetes, levels = c(0, 1)) ~ ., 
+                           data = data_train_preprocessed_perturbed, 
+                           type = "C-svc",  
+                           kernel = "rbfdot",  
+                           prob.model = TRUE))
+  ) %>%
+  mutate(
+    pred_prob = list(predict(ksvm_model, diabetes_val_preprocessed, type = "probabilities")[, 2]),
+    true = list(factor(diabetes_val_preprocessed$diabetes, levels = c(0, 1))),
+    auc = roc_auc_vec(true, pred_prob),
+    tp_rate = sens_vec(true, factor(as.numeric(pred_prob > 0.5), levels = c(0, 1))),
+    tn_rate = spec_vec(true, factor(as.numeric(pred_prob > 0.5), levels = c(0, 1))),
+    accuracy = accuracy_vec(true, factor(as.numeric(pred_prob > 0.5), levels = c(0, 1))),
+    .after = "pred_prob"
+  ) %>%
+  ungroup()
+
+print(diabetes_data_perturbed_ksvm, width = Inf)
+
+```
+
+And then for the Bagging(RF) fits:
+
+```{r}
+# Random forest (bagging) fitting for each perturbed dataset
+library(randomForest)
+library(dplyr)
+library(yardstick)
+
+# 逐个处理每个扰动数据集
+diabetes_data_perturbed_rf <- diabetes_data_perturbed %>%
+  rowwise() %>%
+  mutate(
+    # 训练Random Forest模型
+    rf_model = list(randomForest(factor(diabetes, levels = c(0, 1)) ~ ., 
+                                 data = data_train_preprocessed_perturbed, 
+                                 ntree = 500, 
+                                 importance = TRUE))
+  ) %>%
+  mutate(
+    # 获取预测概率
+    pred_prob = list(predict(rf_model, diabetes_val_preprocessed, type = "prob")[, 2]),
+    # 获取验证集真实标签
+    true = list(factor(diabetes_val_preprocessed$diabetes, levels = c(0, 1))),
+    # 计算评估指标
+    auc = roc_auc_vec(true, pred_prob),
+    tp_rate = sens_vec(true, factor(as.numeric(pred_prob > 0.5), levels = c(0, 1))),
+    tn_rate = spec_vec(true, factor(as.numeric(pred_prob > 0.5), levels = c(0, 1))),
+    accuracy = accuracy_vec(true, factor(as.numeric(pred_prob > 0.5), levels = c(0, 1))),
+    .after = "pred_prob"
+  ) %>%
+  ungroup()
+
+# 查看结果
+print(diabetes_data_perturbed_rf, width = Inf)
+
+```
+
+Then we can look at the distributions of the performance metrics we computed for the 100 perturbed fits. First, let's look at just the first 10 perturbed ROC curves.
+
+```{r}
+# KNN ROC curve
+gg_roc_knn <- diabetes_data_perturbed_knn %>%
+  slice(1:10) %>%
+  # 确保 'true' 列与前10行匹配，并将其转换为因子类型
+  mutate(true = factor(true, levels = c(0, 1)),
+         pred = unlist(pred)[1:10]) %>%  # 确保仅选择前10个预测结果
+  group_by(iter) %>%
+  # 计算 ROC 曲线
+  roc_curve(true, pred) %>%
+  autoplot() +
+  theme(legend.position = "none") +
+  ggtitle("(a) KNN")
+
+# Logistic Regression ROC curve
+gg_roc_lr <- diabetes_data_perturbed_lr %>%
+  slice(1:10) %>%
+  mutate(true = factor(true, levels = c(0, 1)),
+         pred = unlist(pred)[1:10]) %>%  # 确保仅选择前10个预测结果
+  group_by(iter) %>%
+  roc_curve(true, pred) %>%
+  autoplot() +
+  theme(legend.position = "none") +
+  ggtitle("(b) Logistic Regression")
+
+# SVM ROC curve
+gg_roc_svm <- diabetes_data_perturbed_svm %>%
+  slice(1:10) %>%
+  mutate(true = factor(true, levels = c(0, 1)),
+         pred_prob = unlist(pred_prob)[1:10]) %>%  # 确保仅选择前10个预测结果
+  group_by(iter) %>%
+  roc_curve(true, pred_prob) %>%
+  autoplot() +
+  theme(legend.position = "none") +
+  ggtitle("(c) SVM")
+
+# KSVM ROC curve
+gg_roc_ksvm <- diabetes_data_perturbed_ksvm %>%
+  slice(1:10) %>%
+  mutate(true = factor(true, levels = c(0, 1)),
+         pred_prob = unlist(pred_prob)[1:10]) %>%  # 确保仅选择前10个预测结果
+  group_by(iter) %>%
+  roc_curve(true, pred_prob) %>%
+  autoplot() +
+  theme(legend.position = "none") +
+  ggtitle("(d) KSVM")
+
+# Random Forest ROC curve
+gg_roc_rf <- diabetes_data_perturbed_rf %>%
+  slice(1:10) %>%
+  mutate(true = factor(true, levels = c(0, 1)),
+         pred_prob = unlist(pred_prob)[1:10]) %>%  # 确保仅选择前10个预测结果
+  group_by(iter) %>%
+  roc_curve(true, pred_prob) %>%
+  autoplot() +
+  theme(legend.position = "none") +
+  ggtitle("(e) Random Forest")
+
+# Combine all ROC plots
+gg_roc_knn + gg_roc_lr + gg_roc_svm + gg_roc_ksvm + gg_roc_rf
+
+
+```
+
+Next, let's look at the distribution of the other performance measures using boxplots.
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(forcats)
+
+# First integrate the results of KNN, logistic regression, SVM, KSVM and random forest model
+diabetes_data_perturbed_all_models <- bind_rows(
+  diabetes_data_perturbed_knn %>%
+    transmute(iter, tp_rate, tn_rate, accuracy, fit = "KNN"),
+  
+  diabetes_data_perturbed_lr %>%
+    transmute(iter, tp_rate, tn_rate, accuracy, fit = "Logistic Regression"),
+  
+  diabetes_data_perturbed_svm %>%
+    transmute(iter, tp_rate, tn_rate, accuracy, fit = "SVM"),
+  
+  diabetes_data_perturbed_ksvm %>%
+    transmute(iter, tp_rate, tn_rate, accuracy, fit = "KSVM"),
+  
+  diabetes_data_perturbed_rf %>%
+    transmute(iter, tp_rate, tn_rate, accuracy, fit = "Random Forest")
+) %>%
+  pivot_longer(c(tp_rate, tn_rate, accuracy), 
+               names_to = "measure", values_to = "value") %>%
+  # Make sure fit and measure are displayed in order
+  mutate(fit = fct_inorder(fit),
+         measure = fct_inorder(measure))
+
+# Use ggplot to draw a box plot
+ggplot(diabetes_data_perturbed_all_models) +
+  geom_boxplot(aes(x = fit, y = value)) +
+  facet_wrap(~measure, scales = "free") +
+  labs(title = "Distribution of Performance Metrics Across Models",
+       x = "Model", y = "Performance Metric Value") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
 ### Stability to cleaning/pre-processing judgment calls
+
+In data processing, we use the process of data standardization, where we can try to logarithmically transform the data and then compare the results.
+
+First, we will create a grid of all of the judgment call options.
+
+```{r}
+# Set data preprocessing options: normalized and logarithmic
+standardize_data = c(TRUE, FALSE)  
+log_transform = c(TRUE, FALSE)    
+
+# Create a parameter grid with every possible preprocessing combination (normalized and logarithmic)
+param_options <- expand_grid(standardize_data, log_transform)
+
+```
+
+Then we will create a version of the pre-processed dataset per each of the judgment call combination options. Note that unlike for the data perturbations (which were all based on the "default" pre-processed training dataset) where we could use the "default" validation dataset, we will need to explicitly create perturbed versions of the pre-processed validation data to match each perturbed version of the pre-processed training data.
+
+```{r}
+
+
+# Generate preprocessed versions of the training set and validation set for each preprocessed combination
+diabetes_perturbed <- param_options %>% 
+  rowwise() %>%
+  mutate(
+    data_train_perturbed = list(preprocessDiabetesData(
+      diabetes_train,
+      .standardize = .data$standardize_data,  
+      .log_transform = .data$log_transform
+    )),
+    data_val_perturbed = list(preprocessDiabetesData(
+      diabetes_val,
+      .standardize = .data$standardize_data, 
+      .log_transform = .data$log_transform,
+      .column_selection = colnames(data_train_perturbed)
+    )),
+    .before = 1
+  )
+```
+
+Then we can fit KNN, logistic regression, SVM and Bagging(RF) fits to each perturbed dataset (and store these in list columns too). For each LS and logistic regression fit, we can then compute the validation set predictions and compute the relevant performance measures.
+
+First, we will do this for the KNN fits:
+
+```{r}
+# KNN model fitting for each perturbed dataset
+diabetes_perturbed <- diabetes_perturbed %>%
+  mutate(knn_fits = purrr::map(data_train_perturbed, ~{
+    
+    knn_model <- knn3(DIBEV1 ~ ., data = ., k = 33)  # k=33
+    knn_pred <- predict(knn_model, newdata = data_val_perturbed, type = "class")
+    
+    knn_performance <- performanceMetrics(knn_pred, data_val_perturbed$DIBEV1)
+    knn_performance
+  }))
+
+```
+
+And then for the logistic regression fits:
+
+```{r}
+# Logistic Regression model fitting for each perturbed dataset
+diabetes_perturbed <- diabetes_perturbed %>%
+  mutate(lr_fits = purrr::map(data_train_perturbed, ~{
+    
+    lr_model <- glm(DIBEV1 ~ ., family = "binomial", data = .)  
+    lr_pred <- predict(lr_model, newdata = data_val_perturbed, type = "response")
+   
+    lr_performance <- performanceMetrics(lr_pred, data_val_perturbed$DIBEV1)
+    lr_performance
+  }))
+
+```
+
+And then for the SVM by e1701 fits:
+
+```{r}
+# SVM (e1071) model fitting for each perturbed dataset
+diabetes_perturbed <- diabetes_perturbed %>%
+  mutate(svm_e1071_fits = purrr::map(data_train_perturbed, ~{
+    
+    svm_model <- svm(DIBEV1 ~ ., data = ., kernel = "radial")  
+    svm_pred <- predict(svm_model, newdata = data_val_perturbed)
+    
+    svm_performance <- performanceMetrics(svm_pred, data_val_perturbed$DIBEV1)
+    svm_performance
+  }))
+
+```
+
+And then for the SVM by ksvm fits:
+
+```{r}
+# SVM (ksvm) model fitting for each perturbed dataset
+diabetes_perturbed <- diabetes_perturbed %>%
+  mutate(svm_ksvm_fits = purrr::map(data_train_perturbed, ~{
+    
+    svm_model <- ksvm(DIBEV1 ~ ., data = ., kernel = "rbfdot")  
+    svm_pred <- predict(svm_model, newdata = data_val_perturbed)
+    
+    svm_performance <- performanceMetrics(svm_pred, data_val_perturbed$DIBEV1)
+    svm_performance
+  }))
+
+
+```
+
+And then for the Bagging(RF) fits:
+
+```{r}
+# Random Forest (Bagging) model fitting for each perturbed dataset
+diabetes_perturbed <- diabetes_perturbed %>%
+  mutate(rf_bagging_fits = purrr::map(data_train_perturbed, ~{
+   
+    rf_model <- randomForest(DIBEV1 ~ ., data = .)  
+    rf_pred <- predict(rf_model, newdata = data_val_perturbed)
+    
+    rf_performance <- performanceMetrics(rf_pred, data_val_perturbed$DIBEV1)
+    rf_performance
+  }))
+
+```
+
+Then we can look at the distributions of the performance metrics we computed for the 100 perturbed fits. First, let's look at just the first 10 perturbed ROC curves.
+
+```{r}
+# Plot ROC curves for the first 10 perturbed datasets
+diabetes_perturbed %>%
+  head(10) %>%  # 只取前10个扰动数据集
+  mutate(roc_data = purrr::map2(data_train_perturbed, data_val_perturbed, ~{
+    model <- glm(DIBEV1 ~ ., family = "binomial", data = .x)  # 使用逻辑回归模型
+    pred <- predict(model, newdata = .y, type = "response")
+    
+    # 计算ROC曲线
+    roc_curve <- roc(.y$DIBEV1, pred)
+    data.frame(fpr = roc_curve$fpr, tpr = roc_curve$tpr)
+  })) %>%
+  unnest(roc_data) %>%
+  ggplot(aes(x = fpr, y = tpr)) +
+  geom_line() +
+  labs(title = "ROC Curves for the First 10 Perturbed Datasets")
+
+```
+
+Next, let's look at the distribution of the other performance measures using boxplots.
+
+```{r}
+# Compare the performance of all models across the perturbed datasets
+diabetes_perturbed %>%
+  unnest(c(knn_fits, lr_fits, svm_e1071_fits, svm_ksvm_fits, rf_bagging_fits)) %>%
+  pivot_longer(cols = c(knn_fits, lr_fits, svm_e1071_fits, svm_ksvm_fits, rf_bagging_fits), 
+               names_to = "model", values_to = "performance") %>%
+  ggplot(aes(x = model, y = performance)) +
+  geom_boxplot() +
+  facet_wrap(~measure)
+
+```
+
+We can also these performance measures across different judgment call options
+
+Overall, it seems like the `log_page` judgment call is the only one that seems to make much of a difference, in that when we *do* log-transform the page variables, we tend to have fits with *lower* AUCs, however, the decrease in AUC is not too extreme.
+
+## PCS evaluations
+
+### PCS Ensemble
+
+We generate different data sets according to different data preprocessing methods
+
+-   Version 1: Standardization (Z-score).
+
+-   Version 2: Normalized to \[0,1\].
+
+-   Version 3: Normalized after logarithmic conversion.
+
+    ```{r}
+    library(dplyr)
+
+    # Create different versions of training sets, validation sets, and test sets
+    create_preprocessed_data <- function(data) {
+      list(
+        standardized = data %>%
+          mutate(across(where(is.numeric), ~ (.-mean(.)) / sd(.))),
+        normalized = data %>%
+          mutate(across(where(is.numeric), ~ (. - min(.)) / (max(.) - min(.)))),
+        log_normalized = data %>%
+          mutate(across(where(is.numeric), ~ log(. + 1))) %>%
+          mutate(across(where(is.numeric), ~ (. - min(.)) / (max(.) - min(.))))
+      )
+    }
+
+    # Applies to training sets, validation sets, and test sets
+    train_versions <- create_preprocessed_data(data_train)
+    val_versions <- create_preprocessed_data(data_val)
+    test_versions <- create_preprocessed_data(data_test)
+
+    ```
+
+Generate a prediction fit for each version and algorithm
+
+```{r}
+library(e1071)
+library(randomForest)
+library(caret)
+
+# Stores prediction fits for all versions and algorithms
+model_fits <- list()
+
+# Algorithm list
+algorithms <- list(
+  svm = function(data) svm(factor(diabetes, levels = c(0, 1)) ~ ., data = data, probability = TRUE),
+  rf = function(data) randomForest(factor(diabetes, levels = c(0, 1)) ~ ., data = data),
+  knn = function(data) train(factor(diabetes, levels = c(0, 1)) ~ ., data = data, method = "knn", trControl = trainControl(method = "cv"))
+)
+
+# Fit the model for each data version and algorithm
+for (version in names(train_versions)) {
+  for (algorithm in names(algorithms)) {
+    model <- algorithms[[algorithm]](train_versions[[version]])
+    model_fits[[paste(version, algorithm, sep = "_")]] <- list(
+      model = model,
+      version = version,
+      algorithm = algorithm
+    )
+  }
+}
+
+```
+
+Evaluate fit performance on validation sets
+
+```{r}
+library(pROC)
+
+# Store evaluation results
+validation_results <- data.frame()
+
+# Evaluate the performance of each model on the validation set
+for (fit_name in names(model_fits)) {
+  fit <- model_fits[[fit_name]]
+  version <- fit$version
+  algorithm <- fit$algorithm
+  model <- fit$model
+  
+  # Get validation set data
+  val_data <- val_versions[[version]]
+  true <- factor(val_data$diabetes, levels = c(0, 1))
+  
+  # Prediction probability
+  if (algorithm == "rf") {
+    pred_prob <- predict(model, val_data, type = "prob")[, 2]
+  } else {
+    pred <- predict(model, val_data, probability = TRUE)
+    pred_prob <- if (algorithm == "svm") attr(pred, "probabilities")[, 2] else pred
+  }
+  
+  # Calculate the AUC
+  auc <- roc(true, pred_prob)$auc
+  
+  # Store results
+  validation_results <- rbind(validation_results, data.frame(
+    version = version,
+    algorithm = algorithm,
+    auc = auc
+  ))
+}
+
+# View validation set performance
+validation_results
+
+```
+
+Preserving the fit of the top 10% AUC:
+
+```{r}
+# Preserving the fit of the top 10% AUC:
+top_models <- validation_results %>%
+  arrange(desc(auc)) %>%
+  slice(1:ceiling(0.1 * nrow(validation_results)))
+
+top_model_fits <- model_fits[names(model_fits) %in% paste(top_models$version, top_models$algorithm, sep = "_")]
+
+```
+
+Make integrated predictions on the test set
+
+```{r}
+# Integrated prediction (by probability average)
+test_predictions <- data.frame()
+
+for (fit_name in names(top_model_fits)) {
+  fit <- top_model_fits[[fit_name]]
+  version <- fit$version
+  algorithm <- fit$algorithm
+  model <- fit$model
+  
+  # Get test set data
+  test_data <- test_versions[[version]]
+  
+  # Prediction probability
+  if (algorithm == "rf") {
+    pred_prob <- predict(model, test_data, type = "prob")[, 2]
+  } else {
+    pred <- predict(model, test_data, probability = TRUE)
+    pred_prob <- if (algorithm == "svm") attr(pred, "probabilities")[, 2] else pred
+  }
+  
+  test_predictions[[fit_name]] <- pred_prob
+}
+
+# Calculate final prediction (probability average)
+final_predictions <- rowMeans(test_predictions)
+
+# binary classification decision
+final_predictions_class <- ifelse(final_predictions > 0.5, 1, 0)
+
+# Evaluate performance
+true_test <- factor(data_test$diabetes, levels = c(0, 1))
+conf_matrix <- confusionMatrix(factor(final_predictions_class, levels = c(0, 1)), true_test)
+conf_matrix
+
+```
